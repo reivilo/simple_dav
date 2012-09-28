@@ -1,0 +1,47 @@
+This class acts as a Ruby dav client. First Goal is to sync sogo with RoR apps
+
+First release allow to connect to sogo address book
+
+INSTALL :
+
+> gem install simple_dav
+
+USE :
+
+Example:
+
+  server = "mysogoserver.net"
+  ab = "personal" 
+  user = "user" 
+  pass = "secret"
+
+  adb = AddressBook.new(ab, :server => server,:verify => false, :ssl => true, :user => user, :pass => pass, :type => "sogo")
+
+  cards = adb.find_by_email("od@idfuze.com")
+  card = cards.first
+  card.to_s
+  > PRODID:-//IDFuze//SimpleDav//EN
+  > VERSION:3.0
+  > CLASS:PUBLIC
+  > PROFILE:VCARD
+  > N:titi
+  > EMAIL:od@idfuze.com
+  > UID:38294-1348845607-45923.vcf
+  > END:VCARD
+  card.update(:n => "Olivier", :fn => "dev")
+  > PRODID:-//IDFuze//SimpleDav//EN
+  > VERSION:3.0
+  > CLASS:PUBLIC
+  > PROFILE:VCARD
+  > N:Olivier
+  > EMAIL:od@idfuze.com
+  > UID:38294-1348845607-45923.vcf
+  > FN:dev
+  > END:VCARD
+  card.delete
+
+
+Many thanks to SOGo team you make a wonderfull work and i really want to add a little brick with that !
+
+
+Copyright (c) 2012 IDFUZE.COM / Olivier DIRRENBERGER
