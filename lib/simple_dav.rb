@@ -19,16 +19,23 @@ PROFILE:VCARD
 END:VCARD
 EOF
 
+GROUPVCF = <<EOF
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//IDFuze//SimpleDav//EN
+END:VCARD
+EOF
+
 class SimpleDav
   attr_reader :headers, :uri, :client
   
+  # generate unique id to create resources
   def gen_uid
     "#{rand(100000)}-#{Time.now.to_i}-#{rand(100000)}"
   end
 
   def initialize(params = {})
     begin
-      #https://serveur.ag-si.net/SOGo/dav/geraldine/Contacts/personal/
       url = params[:ssl] ? "https://#{params[:server]}/" : "http://#{params[:server]}/"
       url += case (@type = params[:type])
       when "sogo" then "/SOGo/dav/#{params[:user]}/"
@@ -52,32 +59,104 @@ class SimpleDav
 end
 
 class AddressBook < SimpleDav
-  
-  #PUT (Create) sends If-None-Match: *
-
-#PUT (Replace) sends If-Match: <existing etag>
-
-#DELETE sends If-Match: <existing etag>
 
   def initialize(abu = "personal", params)
     @vcard = nil
     super(params)
-    abu = @type == "sogo" ? "Contacts/#{abu}/" : "#{abu}"
-    @uri.path += abu
+    @abu = @type == "sogo" ? "Contacts/#{abu}/" : "#{abu}"
+    @uri.path += @abu
+    @group = nil
   end
   
+  # select address book
+  def select=(abu = "personnal")
+    #todo select uid or nil if personnal
+    @uri.path -= @abu
+    @uri.path += (@abu = abu)
+  end
+  
+  # list available address books
+  #find all X-ADDRESSBOOKSERVER-KIND
+  def list
+    where("X-ADDRESSBOOKSERVER-KIND", "group")
+  end
+  
+  # find addresse resource by uid
   def self.find(uid)
     where(:uid => uid)
   end
   
-  def create(params)
-    Vcard.create(self, params)
+  # create collection : not working actually
+  def create_folder(name, displayname = "", description = "")
+    query = Nokogiri::XML::Builder.new(:encoding => "UTF-8") do |xml|
+      xml.send('D:mkcol', 'xmlns:D' => "DAV:", 'xmlns:C' => "urn:ietf:params:xml:ns:carddav") do
+        xml.send('D:set') do
+          xml.send('D:prop')
+          xml.send('D:resourcetype') do
+            xml.send('D:collection')
+            xml.send('C:addressbook')
+          end
+        end
+        xml.send('D:displayname') do
+          xml << displayname
+        end
+        xml.send('C:addressbook-description', 'xml:lang' => "en") do
+          xml << description
+        end
+      end
+    end
+    
+    headers = {
+      "content-Type" => "text/xml; charset=\"utf-8\"",
+      "Content-Length" => query.to_xml.to_s.size
+      }
+
+    res = @client.request('MKCOL', @uri, nil, query.to_xml.to_s, headers)
+
+    if res.status < 200 or res.status >= 300
+      raise "create failed: #{res.inspect}"
+    else
+      true
+    end
   end
   
+  # create address book group
+  def create(name, description = "")
+    uid = "#{gen_uid}"
+    
+    @vcard = Vcard.new(GROUPVCF)
+    @vcard.add_attribute("X-ADDRESSBOOKSERVER-KIND", "group")
+    @vcard.add_attribute("rev", Time.now.utc.round.iso8601(2))
+    @vcard.add_attribute("uid", uid)
+    @vcard.add_attribute(:f, name)
+    @vcard.add_attribute(:fn, description)
+    
+    headers = {
+      "If-None-Match" => "*",
+      "Content-Type" => "text/vcard",
+      "Content-Length" => @vcard.to_s.size
+      }
+    
+    unc = @uri.clone
+    unc.path += "#{uid}.vcf"
+    res = @client.request('PUT', unc, nil, @vcard.to_s, headers)
+
+    if res.status < 200 or res.status >= 300
+      @uid = nil
+      raise "create failed: #{res.inspect}"
+    else
+      @uid = @group = uid
+    end
+    @vcard
+    
+  end
+  
+  # access to current vcard object
   def vcard
     @vcard
   end
-
+  
+  # find where RoR style
   def where(conditions)
     query = Nokogiri::XML::Builder.new(:encoding => "UTF-8") do |xml|
       xml.send('C:addressbook-query', 'xmlns:D' => "DAV:", 'xmlns:C' => "urn:ietf:params:xml:ns:carddav") do
@@ -116,12 +195,6 @@ class AddressBook < SimpleDav
     return vcards
   end
   
-  def update(params)
-    #get card
-    
-    #push card with new params
-  end
-  
   def method_missing(meth, *args, &block)
     if meth.to_s =~ /^find_by_(.+)$/
       run_find_by_method($1, *args, &block)
@@ -143,6 +216,8 @@ class AddressBook < SimpleDav
 
 end
 
+# attributes : n|email|title|nickname|tel|bday|fn|org|note|uid
+# todo change for another vcard managment class
 class Vcard
   attr_reader :ab
   
@@ -152,9 +227,12 @@ class Vcard
     return self
   end
   
-  def self.create(ab, params)
-    @vcard = Vcard.new(ab)
-
+  def self.find(uid)
+    
+  end
+  
+  # create address resource
+  def self.create(params)
     params.each do |k,v|
       @vcard.update_attribute(k,v)
     end
@@ -164,9 +242,12 @@ class Vcard
       "Content-Type" => "text/vcard",
       "Content-Length" => @vcard.to_s.size
       }
-    uid = "#{ab.gen_uid}.vcf"
+    uid = "#{@ab.gen_uid}.vcf"
     
     @vcard.update_attribute(:uid, uid)
+    if @vcard.ab && @vcard.ab.group
+      @vcard.add_attribute("X-ADDRESSBOOKSERVER-MEMBER", "urn:uuid:#{@vcard.ab.group}")
+    end
     
     unc = ab.uri.clone
     unc.path += uid
