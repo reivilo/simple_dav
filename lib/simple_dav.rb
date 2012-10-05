@@ -267,7 +267,6 @@ class Card
       @uid = nil
       raise "delete failed: #{res.inspect}"
     else
-      puts res.body
       @plain = res.body
       @uid = uid
       true
@@ -346,9 +345,7 @@ class Card
       "depth" => 1,
       "Content-Length" => "#{query.to_xml.to_s.size}"
       }
-    puts ">>>> #{adb.uri}\n"
     content = adb.client.request('REPORT', adb.uri, nil, query.to_xml.to_s, headers)
-    puts "#{content.body}\n\n#{query.to_xml}\n\n"
     xml = Nokogiri::XML(content.body)
     vcards = []
     xml.xpath('//C:address-data').each do |card|
