@@ -38,6 +38,8 @@ Example:
   > UID:38294-1348845607-45923.vcf
   > FN:dev
   > END:VCARD
+  card.uid
+  > "UID:38294-1348845607-45923.vcf"
   card.delete
 
 

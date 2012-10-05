@@ -19,12 +19,7 @@ PROFILE:VCARD
 END:VCARD
 EOF
 
-GROUPVCF = <<EOF
-BEGIN:VCARD
-VERSION:3.0
-PRODID:-//IDFuze//SimpleDav//EN
-END:VCARD
-EOF
+GROUPVCF = BASEVCF
 
 class SimpleDav
   attr_reader :headers, :uri, :client
@@ -38,7 +33,7 @@ class SimpleDav
     begin
       url = params[:ssl] ? "https://#{params[:server]}/" : "http://#{params[:server]}/"
       url += case (@type = params[:type])
-      when "sogo" then "/SOGo/dav/#{params[:user]}/"
+      when "sogo" then "SOGo/dav/#{params[:user]}/"
       else ""
       end
       @uri = URI.parse(url)
@@ -59,31 +54,37 @@ class SimpleDav
 end
 
 class AddressBook < SimpleDav
-
-  def initialize(abu = "personal", params)
+  attr_reader :group
+  def initialize(params)
+    abu = "personal"
     @vcard = nil
     super(params)
     @abu = @type == "sogo" ? "Contacts/#{abu}/" : "#{abu}"
     @uri.path += @abu
-    @group = nil
+    @group = nil #store group uid
+    Card.adb = self
   end
   
   # select address book
-  def select=(abu = "personnal")
+  def change_group(abu)
     #todo select uid or nil if personnal
-    @uri.path -= @abu
-    @uri.path += (@abu = abu)
+    # old style folders
+    #@uri.path -= @abu
+    #@uri.path += (@abu = abu)
+    # new style v4 group
+    groups = Card.where({"X-ADDRESSBOOKSERVER-KIND" => "group", "f" => abu})
+    @group = groups && groups.first && groups.first.uid
   end
   
   # list available address books
   #find all X-ADDRESSBOOKSERVER-KIND
   def list
-    where("X-ADDRESSBOOKSERVER-KIND", "group")
+    Card.where("X-ADDRESSBOOKSERVER-KIND" => "group")
   end
   
   # find addresse resource by uid
   def self.find(uid)
-    where(:uid => uid)
+    Card.find(self, uid)
   end
   
   # create collection : not working actually
@@ -124,9 +125,9 @@ class AddressBook < SimpleDav
   def create(name, description = "")
     uid = "#{gen_uid}"
     
-    @vcard = Vcard.new(GROUPVCF)
+    @vcard = Card.new(GROUPVCF)
     @vcard.add_attribute("X-ADDRESSBOOKSERVER-KIND", "group")
-    @vcard.add_attribute("rev", Time.now.utc.round.iso8601(2))
+    @vcard.add_attribute("rev", Time.now.utc.iso8601(2))
     @vcard.add_attribute("uid", uid)
     @vcard.add_attribute(:f, name)
     @vcard.add_attribute(:fn, description)
@@ -155,60 +156,6 @@ class AddressBook < SimpleDav
   def vcard
     @vcard
   end
-  
-  # find where RoR style
-  def where(conditions)
-    query = Nokogiri::XML::Builder.new(:encoding => "UTF-8") do |xml|
-      xml.send('C:addressbook-query', 'xmlns:D' => "DAV:", 'xmlns:C' => "urn:ietf:params:xml:ns:carddav") do
-        xml.send('D:prop') do
-          xml.send('D:getetag')
-          xml.send('C:address-data') do
-            xml.send('C:prop', 'name' => "UID")
-            conditions.each do |k,v|
-              xml.send('C:prop', 'name' => k.to_s.upcase)
-            end
-          end
-        end
-        xml.send('C:filter') do
-          conditions.each do |k,v|
-            xml.send('C:prop-filter', 'name' => k.to_s.upcase) do
-              xml.send('C:text-match', 'collation' => "i;unicode-casemap", 'match-type' => "equals") do
-                xml << v
-              end
-            end
-          end
-        end
-      end
-    end
-    headers = {
-      "content-Type" => "text/xml; charset=\"utf-8\"",
-      "depth" => 1
-      }
-
-    content = @client.request('REPORT', @uri, nil, query.to_xml.to_s, headers)
-    #puts "#{content.body}"
-    xml = Nokogiri::XML(content.body)
-    vcards = []
-    xml.xpath('//C:address-data').each do |card|
-      vcards << Vcard.new(self, card.text)
-    end
-    return vcards
-  end
-  
-  def method_missing(meth, *args, &block)
-    if meth.to_s =~ /^find_by_(.+)$/
-      run_find_by_method($1, *args, &block)
-    else
-      super
-    end
-  end
-
-  def run_find_by_method(attrs, *args, &block)
-    attrs = attrs.split('_and_')
-    attrs_with_args = [attrs, args].transpose
-    conditions = Hash[attrs_with_args]
-    where(conditions)
-  end
 
   def debug_dev=(dev)
     @client.debug_dev = dev
@@ -218,21 +165,22 @@ end
 
 # attributes : n|email|title|nickname|tel|bday|fn|org|note|uid
 # todo change for another vcard managment class
-class Vcard
-  attr_reader :ab
+class Card
+  class << self; attr_accessor :adb end
+  @adb = nil
   
-  def initialize(ab, text = BASEVCF)
+  def initialize(text = BASEVCF)
     @plain = text
-    @ab = ab
     return self
   end
   
   def self.find(uid)
-    
+    where(:uid => uid)
   end
   
   # create address resource
   def self.create(params)
+    @vcard = Card.new
     params.each do |k,v|
       @vcard.update_attribute(k,v)
     end
@@ -242,16 +190,16 @@ class Vcard
       "Content-Type" => "text/vcard",
       "Content-Length" => @vcard.to_s.size
       }
-    uid = "#{@ab.gen_uid}.vcf"
+    uid = "#{adb.gen_uid}.vcf"
     
     @vcard.update_attribute(:uid, uid)
-    if @vcard.ab && @vcard.ab.group
-      @vcard.add_attribute("X-ADDRESSBOOKSERVER-MEMBER", "urn:uuid:#{@vcard.ab.group}")
+    if adb && adb.group
+      @vcard.add_attribute("X-ADDRESSBOOKSERVER-MEMBER", "urn:uuid:#{adb.group}")
     end
     
-    unc = ab.uri.clone
+    unc = adb.uri.clone
     unc.path += uid
-    res = @vcard.ab.client.request('PUT', unc, nil, @vcard.to_s, headers)
+    res = adb.client.request('PUT', unc, nil, @vcard.to_s, headers)
 
     if res.status < 200 or res.status >= 300
       @uid = nil
@@ -273,9 +221,9 @@ class Vcard
       }
     uid = self.uid
     
-    unc = ab.uri.clone
+    unc = Card.adb.uri.clone
     unc.path += uid
-    res = @ab.client.request('PUT', unc, nil, @plain, headers)
+    res = Card.adb.client.request('PUT', unc, nil, @plain, headers)
 
     if res.status < 200 or res.status >= 300
       @uid = nil
@@ -287,15 +235,15 @@ class Vcard
   end
   
   def delete
-    if @uid && @ab
+    if @uid && Card.adb
 
       headers = {
         #"If-None-Match" => "*",
         "Content-Type" => "text/xml; charset=\"utf-8\""
         }
-      unc = @ab.uri.clone
+      unc = adb.uri.clone
       unc.path += @uid
-      res = @ab.client.request('DELETE', unc, nil, nil, headers)
+      res = adb.client.request('DELETE', unc, nil, nil, headers)
 
       if res.status < 200 or res.status >= 300
         @uid = nil
@@ -309,6 +257,23 @@ class Vcard
     end
   end
   
+  def retreive
+    path = "#{self.uid}.vcf"
+    unc = adb.uri.clone
+    unc.path += path
+    res = adb.client.request('GET', unc)
+
+    if res.status < 200 or res.status >= 300
+      @uid = nil
+      raise "delete failed: #{res.inspect}"
+    else
+      puts res.body
+      @plain = res.body
+      @uid = uid
+      true
+    end
+  end
+  
   def update_attribute(a, v)
     @plain.match(/^#{a.to_s.upcase}:(.+)$/) ? @plain.gsub!(/^#{a.to_s.upcase}:(.+)$/, "#{a.to_s.upcase}:#{v}") : add_attribute(a, v)
   end
@@ -318,8 +283,11 @@ class Vcard
   end
 
   def method_missing(meth, *args, &block)
-    if meth.to_s =~ /^((n|email|title|nickname|tel|bday|fn|org|note|uid)=?)$/
-      run_on_field($1, *args, &block)
+    case meth.to_s 
+      when /^((n|email|title|nickname|tel|bday|fn|org|note|uid|X-ADDRESSBOOKSERVER-KIND)=?)$/
+        run_on_field($1, *args, &block)
+      when /^find_by_(.+)$/
+        run_find_by_method($1, *args, &block)
     else
       super
     end
@@ -339,6 +307,61 @@ class Vcard
         nil
       end
     end
+  end
+  
+    # find where RoR style
+  def self.where(conditions)
+    limit = 1
+    query = Nokogiri::XML::Builder.new(:encoding => "UTF-8") do |xml|
+      xml.send('B:addressbook-query', 'xmlns:B' => "urn:ietf:params:xml:ns:carddav") do
+        xml.send('A:prop', 'xmlns:A' => "DAV:",) do
+          xml.send('A:getetag')
+          xml.send('B:address-data') 
+          
+        end
+        #xml.send('C:filter', 'test' => "anyof") do
+        xml.send('B:filter', 'test' => 'anyof') do
+          conditions.each do |k,v|
+            xml.send('B:prop-filter', 'test' => 'allof','name' => k.to_s) do
+              #xml.send('C:text-match', 'collation' => "i;unicode-casemap", 'match-type' => "contains") do
+              xml.send('B:text-match', 'collation' => "i;unicode-casemap", 'match-type' => "contains") do
+                xml << v
+              end
+            end
+          end
+        end
+        if limit
+          xml.send('C:limit') do
+            xml.send('C:nresults') do
+              xml << "#{limit}"
+            end
+          end
+        end
+          
+      end
+
+    end
+    headers = {
+      "content-Type" => "text/xml; charset=\"utf-8\"",
+      "depth" => 1,
+      "Content-Length" => "#{query.to_xml.to_s.size}"
+      }
+    puts ">>>> #{adb.uri}\n"
+    content = adb.client.request('REPORT', adb.uri, nil, query.to_xml.to_s, headers)
+    puts "#{content.body}\n\n#{query.to_xml}\n\n"
+    xml = Nokogiri::XML(content.body)
+    vcards = []
+    xml.xpath('//C:address-data').each do |card|
+      vcards << Card.new(card.text)
+    end
+    return vcards
+  end
+
+  def run_find_by_method(attrs, *args, &block)
+    attrs = attrs.split('_and_')
+    attrs_with_args = [attrs, args].transpose
+    conditions = Hash[attrs_with_args]
+    where(conditions)
   end
   
   def to_s
