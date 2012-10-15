@@ -10,6 +10,8 @@ USE :
 
 Example:
 
+  include SimpleDav
+
   server = "mysogoserver.net"
   ab = "personal" 
   user = "user" 
@@ -17,7 +19,7 @@ Example:
 
   adb = AddressBook.new(ab, :server => server,:verify => false, :ssl => true, :user => user, :pass => pass, :type => "sogo")
 
-  cards = adb.find_by_email("od@idfuze.com")
+  cards = Card.where(:email => "od@idfuze.com")
   card = cards.first
   card.to_s
   > PRODID:-//IDFuze//SimpleDav//EN
